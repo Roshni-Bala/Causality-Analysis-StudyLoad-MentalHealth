@@ -21,6 +21,8 @@ library('marginaleffects')
 library("MatchIt")
 library("ggplot2")
 library("tidyverse")
+library("glmnet")
+library("AER")
 
 ```
 
@@ -32,15 +34,12 @@ data = read.csv("StressLevelDataset.csv")
 head(data)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
-
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
 
 ```{r}
 summary(data)
 ```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
 
 ```{r}
 install.packages("dagitty")
@@ -48,15 +47,347 @@ library(dagitty)
 
 # Define your DAG
 dag <- dagitty('dag {
-  "High Study Load" -> "Anxiety Levels"
-  "Self Esteem" -> "Anxiety Levels"
-  "Social Support" -> "Anxiety Levels"
-  "Sleep Quality" -> "Anxiety Levels"
-  "Physical Activity" -> "Anxiety Levels"
-  "High Study Load" -> "Self Esteem"
-  "Social Support" -> "Sleep Quality"
+  "Work Load" -> "Anxiety Levels"
+  "Future Career Concerns" -> "Anxiety Levels"
+  "Academic Performance" -> "Anxiety Levels"
+    "Future Career Concerns" -> "Work Load"
+  "Academic Performance" -> "Work Load"
 }')
 
 # Plot the DAG
 plot(dag)
 ```
+
+Outcome: Anxiety Levels (0 to 21)
+Treatment: Having High Study Load
+Treatment Effect: Effect of Study Load on Anxiety Levels
+Treatment Group: Students having high Study Load (Study Load = 3, 4, 5)
+Control Group: Students having lower study load (Study Load = 0, 1, 2)
+
+
+
+EDA
+---
+
+```{r}
+head(data)
+```
+
+```{r}
+hist(data$anxiety_level)
+```
+
+
+
+```{r}
+hist(data$study_load)
+```
+
+
+```{r}
+hist(data$academic_performance)
+```
+
+
+```{r}
+# creating variable using mean as threshold for a binary classification of each record. 
+## TEACHER STUDENT RELATIONSHIP
+data<-data%>%
+  mutate(teacher_student_relationship_binary=ifelse(teacher_student_relationship<mean(teacher_student_relationship),0,1))%>%
+  mutate(teacher_student_relationship_Label = ifelse(teacher_student_relationship_binary==0,"Poor Relationship","Good Relationship"))
+
+# assigning the label based on created binary labels
+
+temp<-data%>%
+  group_by(teacher_student_relationship_binary,teacher_student_relationship_Label) %>%
+  summarise(Freq=n(), RelFreq = n()/nrow(data))%>%
+  dplyr::select(teacher_student_relationship_binary,Freq,RelFreq,teacher_student_relationship_Label)
+temp
+
+
+```
+The split is relatively even. 
+
+
+```{r}
+# creating variable using mean as threshold for a binary classification of each record. 
+## EXTRACURRICULAR ACTIVITIES
+data <- data %>%
+  mutate(extracurricular_activities_binary = ifelse(extracurricular_activities < mean(extracurricular_activities), 0, 1)) %>%
+  mutate(extracurricular_activities_Label = ifelse(extracurricular_activities_binary == 0, "Few Activities", "Many Activities"))
+
+temp <- data %>%
+  group_by(extracurricular_activities_binary, extracurricular_activities_Label) %>%
+  summarise(Freq = n(), RelFreq = n() / nrow(data)) %>%
+  dplyr::select(extracurricular_activities_binary, Freq, RelFreq, extracurricular_activities_Label)
+temp
+
+```
+
+
+
+
+```{r}
+# creating variable using mean as threshold for a binary classification of each record. 
+## FUTURE CAREER CONCERNS
+data <- data %>%
+  mutate(future_career_concerns_binary = ifelse(future_career_concerns < mean(future_career_concerns), 0, 1)) %>%
+  mutate(future_career_concerns_Label = ifelse(future_career_concerns_binary == 0, "Low Concerns", "High Concerns"))
+
+temp <- data %>%
+  group_by(future_career_concerns_binary, future_career_concerns_Label) %>%
+  summarise(Freq = n(), RelFreq = n() / nrow(data)) %>%
+  dplyr::select(future_career_concerns_binary, Freq, RelFreq, future_career_concerns_Label)
+temp
+
+```
+
+
+```{r}
+# creating variable using mean as threshold for a binary classification of each record. 
+## ACADEMIC PERFORMANCE
+data <- data %>%
+  mutate(academic_performance_binary = ifelse(academic_performance < mean(academic_performance), 0, 1)) %>%
+  mutate(academic_performance_Label = ifelse(academic_performance_binary == 0, "Low Performance", "High Performance"))
+
+temp <- data %>%
+  group_by(academic_performance_binary, academic_performance_Label) %>%
+  summarise(Freq = n(), RelFreq = n() / nrow(data)) %>%
+  dplyr::select(academic_performance_binary, Freq, RelFreq, academic_performance_Label)
+temp
+
+```
+
+
+```{r}
+# creating variable using mean as threshold for a binary classification of each record. 
+## ANXIETY LEVEL
+data<-data%>%
+  mutate(anxiety_category=ifelse(anxiety_level>mean(anxiety_level),1,0))%>%
+  mutate(AnxietyLabel = ifelse(anxiety_category==1,"High","Low"))
+
+
+
+temp<-data%>%
+  group_by(anxiety_category,AnxietyLabel) %>%
+  summarise(Freq=n(), RelFreq = n()/nrow(data))%>%
+  dplyr::select(anxiety_category,Freq,RelFreq,AnxietyLabel)
+temp
+```
+
+Performing RCT
+---
+
+
+Comparing Academic Performance densities by treatment status after simple_ra
+```{r}
+# SIMPLE_RA APPLIED. 
+set.seed(123)
+data.RCT<-data %>%
+mutate(treat.simple=simple_ra(N=nrow(data)))%>%
+mutate(TreatLabel =
+ifelse(treat.simple==1,"Treated","UnTreated"))
+head(data.RCT)
+```
+
+```{r}
+tbl<-table(data.RCT$TreatLabel)
+prop.table(tbl)
+
+```
+The split is relatively even.
+
+```{r}
+#MOSAIC PLOT FOR ASSESSING SPLIT
+ContingencyTable <- table(data.RCT$academic_performance, data.RCT$treat.simple)
+mosaicplot(ContingencyTable,
+color = TRUE,
+xlab = "Academic Performance", # label for x-axis
+ylab = "Treatment Status", # label for y-axis
+main = "Simple Random Assignment, Academic Performance"
+)
+```
+The mosaic plot shows the even splits across the various levels of academic performance.
+
+```{r}
+# CONDUCTING KS TEST FOR COMPARING COVARIATE DENSITIES
+treated<-data.RCT%>% filter(treat.simple==1)
+untreated<-data.RCT%>% filter(treat.simple==0)
+ks.test(treated$academic_performance,untreated$academic_performance)
+```
+
+The large p-Value implies that we fail to reject the null hypothesis, implying that density of academic performance among the treated group is the same as those in the untreated group. That’s a good sign that our RCT will work.
+
+
+```{r}
+# QQ PLOT FOR VISUAL CONFIRMATION OF DENSITIES
+qqplot(treated$academic_performance,untreated$academic_performance)
+```
+
+The qqplot is visual confirmation of the density test. The near perfect 45 degree line in the plot implies that the academic performance densities of the treated/untreated overlap substantially.
+
+
+
+```{r}
+tbl<-table(data.RCT$TreatLabel,data.RCT$academic_performance_Label)
+prop.table(tbl,margin=1)
+
+```
+
+```{r}
+prop.test(tbl)
+```
+46.8% of the treated sample have poor academic performance and 51.07% have good academic performance. The null hypothesis is that these are equal. given the large p-value, we fail to reject the null and this implies that the proportions of poor/good academic performance is similar in treated and untreated groups. This suggests that our co-variate of academic performance, is balanced and gives confidence in the RCT. 
+
+```{r}
+simple.treated<-data.RCT%>%
+filter(treat.simple==1)%>%
+dplyr::select(anxiety_level)
+simple.control<-data.RCT%>%
+filter(treat.simple==0)%>%
+dplyr::select(anxiety_level)
+TE.DiM = mean(simple.treated$anxiety_level)-mean(simple.control$anxiety_level)
+TE.DiM
+
+```
+
+The estimate of 0.096 implies that with the increase in study load, anxiety increases by 0.096 units. 
+
+```{r}
+t.test(simple.control$anxiety_level,simple.treated$anxiety_level)
+```
+
+Large P-Value and 95% CI includes 0, hence we do not have confidence in our results.
+
+```{r}
+TE.OLS<-lm(anxiety_level~treat.simple,data = data.RCT)
+summary(TE.OLS)
+
+```
+Computing TE via Regression also produces a large p-value and our estimate is insignificant.
+
+
+RA+MATCHING
+---
+```{r}
+# creating variable using mean as threshold for a binary classification of each record. 
+## STUDY LOAD
+data <- data %>%
+  mutate(study_load_binary = ifelse(study_load < mean(study_load), 0, 1)) %>%
+  mutate(study_load_label = ifelse(study_load_binary == 0, "Low Study Load", "High Study Load"))
+
+# Create a summary table for study_load
+temp_study_load <- data %>%
+  group_by(study_load_binary, study_load_label) %>%
+  summarise(Freq = n(), RelFreq = n() / nrow(data)) %>%
+  dplyr::select(study_load_binary, Freq, RelFreq, study_load_label)
+
+temp_study_load
+```
+The split is relatively even
+
+```{r}
+matches.NN.All <- matchit(study_load_binary ~ academic_performance,
+                           method = "nearest",
+                           distance = "mahalanobis",
+                           data = data,
+                           ratio = 1)
+
+summary(matches.NN.All)
+matched.NN.All <- match.data(matches.NN.All)
+head(matches.NN.All$match.matrix)
+```
+Although high number of matches, the quality of matches is poor. Std Mean Diff should have an absolute value of less than 0.1. The Var Ratio should be close to 1 and the eCDF Mean and Max should be close to 0.
+This suggests that for a better quality match we may need to use a caliper for this covariate.
+
+```{r}
+## IMPLEMENTING CALIPER ON ACADEMIC PERFORMANCE
+
+matches.NN.All <- matchit(study_load_binary ~ academic_performance,
+                           method = "nearest",
+                           distance = "mahalanobis",
+                           data = data,
+                          caliper = c(academic_performance=.3), std.caliper = TRUE,
+                           ratio = 1)
+
+summary(matches.NN.All)
+matched.NN.All <- match.data(matches.NN.All)
+head(matches.NN.All$match.matrix)
+
+```
+Although the number of matches have reduced, the quality of matches are good, so we will continue with these matches.
+
+
+```{r}
+model.OLS.matched<-lm(anxiety_level ~ study_load+future_career_concerns+academic_performance, data = matched.NN.All)
+summary(model.OLS.matched)
+```
+
+This can be interpreted as, with the increase in study load by 1 unit, anxiety increases by 0.99 units. With the other estimates, we also can observe that with one unit increase in future_career_concerns, anxiety increases by 1.26 units.
+
+Since we expected the effect of study load to be greater than 0.99 units, we suspect there may be some bias.
+
+
+Checking for Bias and Need for IV
+---
+
+A simple OLS:
+
+```{r}
+ols = lm(anxiety_level ~ study_load+future_career_concerns+academic_performance, data =data)
+summary(ols)
+```
+
+We get an estimate of 0.92.
+
+Now, let's run an IV regression of anxiety on study load using extra curriculars as an instrument.
+
+```{r}
+iv = ivreg(anxiety_level ~ study_load | extracurricular_activities, data = data)
+summary(iv)
+```
+We notice an increase in Treatment effect as 5.48. This implies that with the increase in a unit of future career concern, anxiety increases by 5.48 units. 
+
+There is likely OVB. Other factors than future career concerns could affect anxiety levels such as personality traits, family pressures and ambition. Thus, we choose extra curricular activities as a suitable instrument since theoretically it is relevant, independent and exclusive. 
+
+
+```{r}
+iv.FirstStage = lm(study_load~extracurricular_activities, data = data)
+iv.ReducedForm = lm(anxiety_level~extracurricular_activities, data = data)
+iv.manual = iv.ReducedForm$coefficients[2]/iv.FirstStage$coefficients[2]
+iv.manual
+```
+```{r}
+cor(data$study_load, data$extracurricular_activities)
+```
+0.54 seems large enough of a correlation to suggest that extra curriculars is a relevant instrument.
+
+```{r}
+summary(iv, diagnostic = TRUE)
+```
+The small p-value of the weak instrument test suggest that we reject the null. We have confidence that the instrument is valid and thus is related sufficiently to study load.
+On interpreting the Wu Hausman test, we reject the null due to the small p-value and that we do have an endogeneity problem caused by OVB. This supports our use in IV. 
+
+```{r}
+summary(iv.ReducedForm)
+```
+Using the reduced form, we observe that the direct effects of the instrument on the outcome is detected as well as the indirect effect on the treatment variable of study load. If the instrument was not related to the outcome of anxiety then the instrument would not be relevant. 
+
+```{r}
+summary(iv, diagnostic = TRUE)
+```
+
+Thus, we arrive at the estimate of 5.48. With an increase in study load, we see a statistically significant effect on anxiety levels, i.e., with a unit increase in study load, anxiety increases by 5.48 units.
+
+```{r}
+## data1 contains the categorical values incremented by 1 in order to ensure there is no value '0' in the set which could cause log(0) to be infinity. This thus allows us to use logarithmic values in the lm() command and get marginal percentage effects.
+data1<- data %>%
+  mutate_if(is.numeric, function(x) x + 1)
+head(data1)
+data1$anxietyln = log(data1$anxiety_level)
+data1$study_loadln = log(data1$study_load)
+iv = ivreg(anxietyln ~ study_loadln | extracurricular_activities, data = data1)
+summary(iv)
+```
+
+Looking at it from a marginal percent change, we estimate that with a 1 percentage increase in study load, anxiety increases by nearly 2%.
